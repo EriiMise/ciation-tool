@@ -1,0 +1,1209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>文献格式管理工具</title>
+
+<!-- Tailwind（即时 JIT 编译）-->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- importmap：把裸模块名映射到 esm.sh -->
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/": "https://esm.sh/react-dom@18.3.1/",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.460.0?deps=react@18.3.1"
+  }
+}
+</script>
+
+<!-- esm.sh/tsx：在浏览器里即时编译 JSX/TSX -->
+<script type="module" src="https://esm.sh/tsx"></script>
+
+<style>
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+import React, { useState, useEffect, useRef } from 'react';
+import { Upload, FileText, Book, Newspaper, Globe, FileCheck, Plus, Edit2, Trash2, Copy, Download, AlertCircle, HelpCircle, Settings, X, Link as LinkIcon, Search, Loader2, Key, ChevronDown, ChevronUp, Eye, EyeOff } from 'lucide-react';
+
+// ─── 模型配置 ────────────────────────────────────────────────────────────────
+const MODEL_PROVIDERS = {
+  anthropic: {
+    name: 'Anthropic (Claude)',
+    baseUrl: 'https://api.anthropic.com/v1/messages',
+    models: [
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (推荐)' },
+      { id: 'claude-opus-4-7', label: 'Claude Opus 4.7 (最强)' },
+      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+      { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (快速)' },
+    ],
+    pdfMode: 'native',
+    keyPlaceholder: 'sk-ant-...',
+    keyLink: 'https://console.anthropic.com/keys',
+    keyGuide: '前往 Anthropic Console → API Keys → 创建新 Key',
+    corsOk: true,
+    warning: null,
+  },
+  gemini_compat: {
+    name: 'Google Gemini (兼容模式)',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    models: [
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (推荐)' },
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview (最强)' },
+    ],
+    pdfMode: 'text',   // 兼容端点不支持原生PDF，走文本提取
+    keyPlaceholder: 'AIza...',
+    keyLink: 'https://aistudio.google.com/app/apikey',
+    keyGuide: '前往 Google AI Studio → Get API Key → 创建 Key',
+    corsOk: true,
+    warning: '使用 OpenAI 兼容端点以绕过浏览器 CORS 限制。不支持扫描版 PDF（无文字层），如需处理扫描版请改用 Claude。',
+  },
+  deepseek: {
+    name: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1/chat/completions',
+    models: [
+      { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro (最强)' },
+      { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash (快速便宜)' },
+    ],
+    pdfMode: 'text',
+    keyPlaceholder: 'sk-...',
+    keyLink: 'https://platform.deepseek.com/api_keys',
+    keyGuide: '前往 DeepSeek 开放平台 → API Keys → 创建 Key',
+    corsOk: true,
+    warning: '不支持直接读取 PDF，将先提取文字再分析。扫描版 PDF 无法处理，建议改用 Claude。',
+  },
+  doubao: {
+    name: '字节跳动 (豆包)',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+    models: [
+      { id: 'doubao-seed-2-0-pro-260215', label: 'Doubao Seed 2.0 Pro (旗舰)' },
+      { id: 'doubao-seed-2-0-lite-260215', label: 'Doubao Seed 2.0 Lite (均衡)' },
+      { id: 'doubao-seed-2-0-mini-260215', label: 'Doubao Seed 2.0 Mini (高并发)' },
+    ],
+    pdfMode: 'text',
+    keyPlaceholder: '火山方舟 API Key...',
+    keyLink: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
+    keyGuide: '前往火山方舟控制台 → API Key 管理 → 创建 Key',
+    corsOk: true,
+    warning: '不支持直接读取 PDF，将先提取文字再分析。扫描版 PDF 无法处理，建议改用 Claude。',
+  },
+  openai_compat: {
+    name: '自定义 / OpenAI 兼容',
+    baseUrl: '',
+    models: [{ id: 'custom', label: '自定义模型名称' }],
+    pdfMode: 'text',
+    keyPlaceholder: 'API Key...',
+    keyLink: '',
+    keyGuide: '填写兼容 OpenAI 格式的 API 地址和 Key',
+    corsOk: true,
+    warning: null,
+  },
+};
+
+// ─── 文献类型 ────────────────────────────────────────────────────────────────
+const DOC_TYPES = {
+  journal: { label: '学术期刊', icon: FileText, color: 'bg-blue-100 text-blue-700 border-blue-300' },
+  book:    { label: '书籍/专著', icon: Book,     color: 'bg-purple-100 text-purple-700 border-purple-300' },
+  newspaper:{ label: '报纸',    icon: Newspaper, color: 'bg-orange-100 text-orange-700 border-orange-300' },
+  web:     { label: '网页文章', icon: Globe,     color: 'bg-green-100 text-green-700 border-green-300' },
+  official:{ label: '官方文件', icon: FileCheck, color: 'bg-red-100 text-red-700 border-red-300' },
+};
+
+const TYPE_FIELDS = {
+  journal:  ['作者','标题','刊名','年份','卷','期','页码','出版地','出版机构','DOI'],
+  book:     ['作者','书名','版次','出版地','出版机构','年份','页码','ISBN'],
+  newspaper:['作者','标题','报纸名','出版地','出版日期','版次'],
+  web:      ['作者','标题','网站名','出版机构','URL','发表日期','访问日期'],
+  official: ['发文机关','文件标题','文号','版次','出版地','发布日期'],
+};
+
+const PRESET_FORMATS = {
+  'APA 7th': {
+    journal:  '{作者} ({年份}). {标题}. *{刊名}*, *{卷}*({期}), {页码}. {DOI}',
+    book:     '{作者} ({年份}). *{书名}* ({版次}). {出版机构}.',
+    newspaper:'{作者} ({出版日期}). {标题}. *{报纸名}*, {版次}.',
+    web:      '{作者} ({发表日期}). {标题}. *{网站名}*. {URL}',
+    official: '{发文机关} ({发布日期}). *{文件标题}* ({文号}).',
+  },
+  'MLA 9th': {
+    journal:  '{作者}. "{标题}." *{刊名}*, vol. {卷}, no. {期}, {年份}, {p./pp.} {页码}.',
+    book:     '{作者}. *{书名}*. {版次}, {出版机构}, {年份}.',
+    newspaper:'{作者}. "{标题}." *{报纸名}*, {出版日期}, p. {版次}.',
+    web:      '{作者}. "{标题}." *{网站名}*, {发表日期}, {URL}. Accessed {访问日期}.',
+    official: '{发文机关}. "{文件标题}." {文号}, {发布日期}.',
+  },
+  'Chicago (作者-日期)': {
+    journal:  '{作者}. {年份}. "{标题}." *{刊名}* {卷} ({期}): {页码}. {DOI}',
+    book:     '{作者}. {年份}. *{书名}*. {版次}. {出版地}: {出版机构}.',
+    newspaper:'{作者}. {出版日期}. "{标题}." *{报纸名}*, {版次}.',
+    web:      '{作者}. {发表日期}. "{标题}." *{网站名}*. {URL}.',
+    official: '{发文机关}. {发布日期}. *{文件标题}*. {文号}.',
+  },
+  'GB/T 7714-2015': {
+    journal:  '{作者}. {标题}[J]. {刊名}, {年份}, {卷}({期}): {页码}.',
+    book:     '{作者}. {书名}[M]. {版次}. {出版地}: {出版机构}, {年份}.',
+    newspaper:'{作者}. {标题}[N]. {报纸名}, {出版日期}({版次}).',
+    web:      '{作者}. {标题}[EB/OL]. ({发表日期})[{访问日期}]. {URL}.',
+    official: '{发文机关}. {文件标题}: {文号}[A]. {发布日期}.',
+  },
+};
+
+// ─── 工具函数 ────────────────────────────────────────────────────────────────
+const fileToBase64 = (file) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result.split(',')[1]);
+  r.onerror = () => rej(new Error('文件读取失败'));
+  r.readAsDataURL(file);
+});
+
+const formatPageMarker = (p) => {
+  if (!p?.trim()) return '';
+  if (/[-–—~,]|\d+\s*\D+\s*\d+/.test(p.trim())) return 'pp.';
+  if (/^[ivxlcdm\d]+$/i.test(p.trim())) return 'p.';
+  return '';
+};
+
+const skipFields = new Set(['URL','DOI','ISBN','文号']);
+const toChinese = (str) => {
+  if (!str || typeof str !== 'string') return str;
+  return str
+    .replace(/(?<![a-zA-Z\d]): /g, '：').replace(/(?<![a-zA-Z\d]):(?=[^\d\/]|$)/g, '：')
+    .replace(/; /g,'；').replace(/;$/g,'；')
+    .replace(/! /g,'！').replace(/!$/g,'！')
+    .replace(/\? /g,'？').replace(/\?$/g,'？')
+    .replace(/---/g,'——').replace(/--/g,'——')
+    .replace(/\.\.\./g,'……')
+    .replace(/"([^"]+)"/g,'\u201c$1\u201d')
+    .replace(/'([^']+)'/g,'\u2018$1\u2019');
+};
+const applyChinesePunct = (result) => {
+  if (result?.fields) {
+    for (const [k,v] of Object.entries(result.fields))
+      if (!skipFields.has(k)) result.fields[k] = toChinese(v);
+  }
+  return result;
+};
+
+const tryParse = (text) => { try { return JSON.parse(text); } catch { return null; } };
+
+// 用 brace counting 在文本里找出所有看起来完整的 JSON 对象，按出现顺序返回
+const findJsonCandidates = (text) => {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < text.length; j++) {
+      const ch = text[j];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { out.push(text.substring(i, j+1)); i = j; break; }
+      }
+    }
+  }
+  return out;
+};
+
+const parseAIResponse = (raw) => {
+  // 第一步：清洗掉常见噪声
+  // - DeepSeek/o1 风格的 <think>...</think> 推理标签
+  // - 任意位置的 ```json ... ``` 代码块包裹
+  // - 首尾空白
+  let text = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/^[\s\S]*?```(?:json)?\s*/i, m => m.includes('```') ? '' : m)  // 仅在有 ``` 时剥离前缀
+    .replace(/```\s*$/,'')
+    .trim();
+
+  // 第二步：直接试解析
+  let parsed = tryParse(text);
+  if (parsed && typeof parsed === 'object' && parsed.type) return applyChinesePunct(parsed);
+
+  // 第三步：弯引号修复后再试
+  const cleaned = text.replace(/"([^"\\]*)([""„\u300c\u300d][^"\\]*)"/g,
+    (m,pre,rest) => '"'+(pre+rest).replace(/[""„\u300c\u300d]/g,'\\"')+'"');
+  parsed = tryParse(cleaned);
+  if (parsed && typeof parsed === 'object' && parsed.type) return applyChinesePunct(parsed);
+
+  // 第四步：扫描所有 JSON 候选对象，挑含 "type" 和 "fields" 字段、且最长的那个
+  const candidates = findJsonCandidates(text);
+  let best = null, bestLen = 0;
+  for (const c of candidates) {
+    if (!/"type"\s*:/.test(c) || !/"fields"\s*:/.test(c)) continue;
+    const p = tryParse(c) || tryParse(c.replace(/[""„\u300c\u300d]/g,'\\"'));
+    if (p && typeof p === 'object' && p.type && c.length > bestLen) {
+      best = p; bestLen = c.length;
+    }
+  }
+  if (best) return applyChinesePunct(best);
+
+  // 第五步：最后兜底——按字段正则硬扒
+  const typeMatch = text.match(/"type"\s*:\s*"(\w+)"/);
+  const confMatch = text.match(/"confidence"\s*:\s*"(\w+)"/);
+  const fieldsMatch = text.match(/"fields"\s*:\s*\{([\s\S]*?)\}/);
+  const fields = {};
+  if (fieldsMatch) {
+    const re = /"([^"]+)"\s*:\s*"((?:[^"\\]|\\.)*)"/g; let fm;
+    while ((fm = re.exec(fieldsMatch[1])) !== null) fields[fm[1]] = fm[2];
+  }
+  const missingMatch = text.match(/"missingFields"\s*:\s*\[([\s\S]*?)\]/);
+  const missing = missingMatch ? (missingMatch[1].match(/"([^"]*)"/g)||[]).map(s=>s.replace(/"/g,'')) : [];
+  const notesMatch = text.match(/"notes?"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (typeMatch) return applyChinesePunct({type:typeMatch[1],confidence:confMatch?confMatch[1]:'medium',fields,missingFields:missing,notes:(notesMatch?notesMatch[1]:'')+' (从非标准JSON提取，请核对)'});
+  throw new Error(`响应无法解析为JSON。原始响应前300字: ${raw.substring(0,300)}`);
+};
+
+// ─── API 调用（统一路由）────────────────────────────────────────────────────
+const callAPI = async (providerKey, apiKey, modelId, customUrl, pdfBase64, fileName, promptText) => {
+  const provider = MODEL_PROVIDERS[providerKey];
+
+  // ── Anthropic ──
+  if (providerKey === 'anthropic') {
+    const content = pdfBase64
+      ? [{ type:'document', source:{ type:'base64', media_type:'application/pdf', data:pdfBase64 } }, { type:'text', text:promptText }]
+      : [{ type:'text', text:promptText }];
+    const res = await fetch(provider.baseUrl, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01' },
+      body: JSON.stringify({ model:modelId, max_tokens:4000, messages:[{ role:'user', content }] }),
+    });
+    if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(`Anthropic API错误 ${res.status}: ${e.error?.message||res.statusText}`); }
+    const data = await res.json();
+    return data.content[0].text;
+  }
+
+  // ── OpenAI 兼容（Gemini 兼容 / DeepSeek / 豆包 / 自定义）──
+  const baseUrl = providerKey === 'openai_compat' ? customUrl : provider.baseUrl;
+  const actualModel = providerKey === 'openai_compat' ? modelId : modelId; // 自定义时 modelId 就是用户填的
+  // 构造请求体；DeepSeek V4 默认开思考模式，这种结构化提取任务关掉更稳
+  const body = {
+    model: actualModel,
+    max_tokens: 4000,
+    messages:[{ role:'user', content: promptText }],
+  };
+  if (providerKey === 'deepseek') {
+    body.thinking = { type: 'disabled' }; // 显式关闭思考模式，避免响应被推理过程占满
+  }
+  const res = await fetch(baseUrl, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(`API错误 ${res.status}: ${e.error?.message||JSON.stringify(e)||res.statusText}`); }
+  const data = await res.json();
+  return data.choices[0].message.content;
+};
+
+// ─── PDF 提取文本（pdf.js，仅用于文本模式）────────────────────────────────
+let pdfjsLib = null;
+const loadPdfJs = async () => {
+  if (pdfjsLib) return pdfjsLib;
+  if (!window.pdfjsLib) {
+    await new Promise((res,rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload=res; s.onerror=()=>rej(new Error('pdf.js CDN 加载失败'));
+      document.head.appendChild(s);
+      setTimeout(()=>rej(new Error('pdf.js 加载超时')),15000);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  pdfjsLib = window.pdfjsLib; return pdfjsLib;
+};
+const extractTextFromPDF = async (arrayBuffer) => {
+  const pdfjs = await loadPdfJs();
+  const pdf = await pdfjs.getDocument({ data:arrayBuffer, disableFontFace:true }).promise;
+  // 取更多页面：前 12 页（中文文献的元信息可能分散在前几页）+ 最后一页（参考文献末尾常含关键信息）
+  const pages = new Set();
+  for (let i=1;i<=Math.min(12,pdf.numPages);i++) pages.add(i);
+  if (pdf.numPages>12) pages.add(pdf.numPages);
+  const texts = [];
+  for (const n of pages) {
+    try {
+      const page = await pdf.getPage(n);
+      const c = await page.getTextContent();
+      // 按 y 坐标分行（pdf.js 提取的文字流不一定按视觉顺序），保留视觉上的"上下"关系
+      // 这对中英文混排的扉页尤其重要：能让中文标题与英文标题在文本中也保持上下关系
+      const rows = {};
+      for (const item of c.items) {
+        if (!item.str?.trim()) continue;
+        const y = Math.round(item.transform[5]); // y 坐标
+        if (!rows[y]) rows[y] = [];
+        rows[y].push({ x: item.transform[4], str: item.str });
+      }
+      // 按 y 从大到小（页面顶部到底部），同一行内按 x 从小到大
+      const lines = Object.keys(rows)
+        .map(Number).sort((a,b)=>b-a)
+        .map(y => rows[y].sort((a,b)=>a.x-b.x).map(i=>i.str).join(''));
+      const t = lines.join('\n');
+      if (t.trim()) texts.push(`--- 第${n}页 ---\n${t}`);
+    } catch {}
+  }
+  let full = texts.join('\n\n');
+  // 清洗：JSTOR 等数据库下载版常含 NUL 字节(\u0000)和其他控制字符，会污染输入并导致 JSON 解析或模型理解出错
+  // eslint-disable-next-line no-control-regex
+  full = full.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+  // 压缩同一行内 3+ 个连续空格为单空格（不影响换行）
+  full = full.replace(/[ \t]{3,}/g, ' ');
+  const charCount = full.replace(/\s+/g,'').length;
+  if (charCount < 30) {
+    throw new Error('PDF文字内容极少，可能是扫描版或字体编码异常（pdf.js无法识别）。建议切换到 Claude（原生PDF读取，支持扫描版与异常字体）。');
+  }
+  const text = full.length>20000 ? full.substring(0,20000)+'…[已截断]' : full;
+  return { text, charCount, pagesExtracted: texts.length, totalPages: pdf.numPages };
+};
+
+// ─── 提示词 ─────────────────────────────────────────────────────────────────
+const buildPrompt = (fileName, extractedText) => `你是一个文献分析助手。请分析${extractedText ? '以下文档文本' : '这份PDF文档'}，完成两项任务：
+
+1. **文档分类**：判断文献类型（journal/book/newspaper/web/official）
+   - journal: 学术期刊论文
+   - book: 书籍/专著（含博士/硕士论文）
+   - newspaper: 报纸
+   - web: 网页文章
+   - official: 官方/政策文件
+
+2. **信息提取**：根据类型提取字段：
+   - journal: 作者, 标题, 刊名, 年份, 卷, 期, 页码, 出版地, 出版机构, DOI
+   - book: 作者, 书名, 版次, 出版地, 出版机构, 年份, 页码, ISBN
+   - newspaper: 作者, 标题, 报纸名, 出版地, 出版日期, 版次
+   - web: 作者, 标题, 网站名, 出版机构, URL, 发表日期, 访问日期
+   - official: 发文机关, 文件标题, 文号, 版次, 出版地, 发布日期
+
+【关键规则 · 严格遵守】
+
+A. **语言优先级**：
+   - 如文献**仅有英文版本**（如 Naval War College Review、Foreign Affairs 等纯英文期刊），直接使用英文，本规则不适用。
+   - 如文献**同时存在中英文版本**（中文期刊扉页常包含英文标题、英文刊名、英文摘要），**所有字段一律提取中文版本**。
+   - 仅当文献完全没有中文版本时，才使用英文。
+   - 例：中文期刊《社会学研究》同时印有 "Sociological Studies"，刊名必须填"社会学研究"，绝不填英文。
+   - 例：作者"张三"对应的英文 "Zhang San" 或 "ZHANG San" 一律忽略，使用中文姓名。
+   - 中文期刊的卷期号常以"第 X 卷 第 Y 期"形式出现，提取时只填数字（如 卷="39"，期="2"）。
+
+B. **字段定位线索**：
+   - **数据库下载版（JSTOR、ProQuest、CNKI 等）的封面页是权威信息源**：第一页常含 "Author(s):"、"Source:"、"Title:"、"Published by:"、"Stable URL:" 等标签字段（注意：冒号后可能没有空格，如"Author(s):Kentaro Furuya"——此处作者名为 "Kentaro Furuya"）。这些标签字段是元信息的**首选来源**，应直接采用，无需在正文中再寻找。"Source:" 行通常包含刊名、卷、期、年份、页码（如 "Source:Naval War College Review, Vol. 72, No. 4 (Autumn 2019), pp. 26-52" → 刊名=Naval War College Review，卷=72，期=4，年份=2019，页码=26-52）。
+   - 中文期刊文献：刊名通常出现在每页页眉（如"○○研究 2024年第2期"），或扉页顶部的刊名标识；不要把"摘要"、"关键词"、英文期刊名当成中文刊名。
+   - 中文学位论文：扉页有"XX大学博士/硕士学位论文"字样；论文题目用中文版本，授予大学填中文全名。
+   - 页码：期刊内文页眉常显示该篇起止页码（如"15—30"）。
+   - DOI：以 10. 开头的字符串（如 10.1234/abc）；JSTOR 的 Stable URL 中的 "10.2307/xxxxx" 也是 DOI。
+
+C. **不确定时留空**：
+   - 仅提取文档中明确出现的信息，**严禁编造、推测、补全**。
+   - 不确定的字段值留 ""，并列入 missingFields。
+   - 例：如果文档没有明确写出"出版地"，留空，不要根据出版机构推测。
+
+D. **学位论文处理**：按 book 类型；书名 = 论文题目（中文）；出版机构 = 授予学位的大学（中文全名）；年份 = 答辩年份。
+
+E. **JSON 转义**：字段值中的双引号（含中文弯引号" "）必须用 \\" 转义。
+
+文件名（供参考，可能含线索如"社会学研究2024-2.pdf"）：${fileName}
+${extractedText ? `\n文档内容（按页提取，已尽量保留视觉顺序）：\n${extractedText}` : ''}
+
+仅返回合法JSON，不含任何其他文字或代码块标记：
+{"type":"...","confidence":"high|medium|low","fields":{...},"missingFields":[...],"notes":"对提取结果的简短说明，特别是有歧义的字段如何决策"}`;
+
+// ─── 主组件 ──────────────────────────────────────────────────────────────────
+function App() {
+  const [currentFormat, setCurrentFormat] = useState('APA 7th');
+  const [customFormats, setCustomFormats] = useState({});
+  const [documents, setDocuments] = useState([]);
+  const [showFormatEditor, setShowFormatEditor] = useState(false);
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [editingDoc, setEditingDoc] = useState(null);
+  const [urlInput, setUrlInput] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [storageLoaded, setStorageLoaded] = useState(false);
+  const [notifications, setNotifications] = useState([]); // {id, msg, type:'info'|'error'|'success'}
+
+  // 模型设置
+  const [providerKey, setProviderKey] = useState('anthropic');
+  const [apiKey, setApiKey] = useState('');
+  const [modelId, setModelId] = useState('claude-sonnet-4-6');
+  const [customUrl, setCustomUrl] = useState('');
+  const [customModelId, setCustomModelId] = useState('');
+  const [showKey, setShowKey] = useState(false);
+
+  const allFormats = { ...PRESET_FORMATS, ...customFormats };
+  const provider = MODEL_PROVIDERS[providerKey];
+  const effectiveModel = providerKey === 'openai_compat' ? customModelId : modelId;
+
+  // ── 持久化加载 ──
+  useEffect(() => {
+    const keys = ['customFormats','currentFormat','providerKey','apiKey','modelId','customUrl','customModelId'];
+    for (const k of keys) {
+      try {
+        const v = localStorage.getItem('citation:' + k);
+        if (v !== null) {
+          if (k==='customFormats') setCustomFormats(JSON.parse(v));
+          else if (k==='currentFormat') setCurrentFormat(v);
+          else if (k==='providerKey') setProviderKey(v);
+          else if (k==='apiKey') setApiKey(v);
+          else if (k==='modelId') setModelId(v);
+          else if (k==='customUrl') setCustomUrl(v);
+          else if (k==='customModelId') setCustomModelId(v);
+        }
+      } catch {}
+    }
+    setStorageLoaded(true);
+  }, []);
+
+  // ── 持久化保存 ──
+  useEffect(() => {
+    if (!storageLoaded) return;
+    try { localStorage.setItem('citation:customFormats', JSON.stringify(customFormats)); } catch {}
+    try { localStorage.setItem('citation:currentFormat', currentFormat); } catch {}
+    try { localStorage.setItem('citation:providerKey', providerKey); } catch {}
+    try { localStorage.setItem('citation:apiKey', apiKey); } catch {}
+    try { localStorage.setItem('citation:modelId', modelId); } catch {}
+    try { localStorage.setItem('citation:customUrl', customUrl); } catch {}
+    try { localStorage.setItem('citation:customModelId', customModelId); } catch {}
+  }, [customFormats, currentFormat, providerKey, apiKey, modelId, customUrl, customModelId, storageLoaded]);
+
+  const addNotif = (msg, type='info') => {
+    const id = Date.now() + Math.random();
+    setNotifications(p => [...p, { id, msg, type }]);
+    // 成功和普通信息自动消失，错误不自动消失
+    if (type !== 'error') setTimeout(() => removeNotif(id), 4000);
+    return id;
+  };
+  const removeNotif = (id) => setNotifications(p => p.filter(n => n.id !== id));
+  // 兼容旧的 setStatus 调用
+  const setStatus = (msg, auto) => {
+    const type = msg.startsWith('处理') && msg.includes('失败') ? 'error'
+      : msg.startsWith('⚠️') ? 'error' : 'info';
+    addNotif(msg, type);
+  };
+
+  const hasApiKey = () => !!apiKey.trim();
+
+  // ── 核心：分析 PDF ──
+  const analyzePDF = async (file) => {
+    if (!hasApiKey()) { setStatus('⚠️ 请先在设置中填写 API Key'); setShowSettings(true); return; }
+    if (file.size > 30*1024*1024) { setStatus(`文件过大 (${(file.size/1024/1024).toFixed(1)}MB)，请控制在30MB以内`); return; }
+
+    setProcessing(true);
+    try {
+      const pdfMode = provider.pdfMode;
+      let pdfBase64 = null, extractedText = null;
+
+      if (pdfMode === 'native') {
+        setStatus(`正在编码 ${file.name}...`, 0);
+        pdfBase64 = await fileToBase64(file);
+      } else {
+        setStatus(`正在提取 ${file.name} 的文字内容...`, 0);
+        const ab = await file.arrayBuffer();
+        const ext = await extractTextFromPDF(ab);
+        extractedText = ext.text;
+        // 诊断提示：让用户能看到提取质量
+        if (ext.charCount < 500) {
+          setStatus(`⚠️ ${file.name}：仅提取到 ${ext.charCount} 个字符（共 ${ext.totalPages} 页，处理 ${ext.pagesExtracted} 页）。可能字体编码异常，结果可能不准。建议改用 Claude（原生PDF读取）。`);
+        } else {
+          setStatus(`已提取 ${ext.charCount} 字符（${ext.pagesExtracted}/${ext.totalPages} 页）`);
+        }
+      }
+
+      setStatus(`正在分析 ${file.name}（使用 ${provider.name} · ${effectiveModel}）...`, 0);
+      const prompt = buildPrompt(file.name, extractedText);
+      const rawResp = await callAPI(providerKey, apiKey, effectiveModel, customUrl, pdfBase64, file.name, prompt);
+      const info = parseAIResponse(rawResp);
+
+      setDocuments(prev => [...prev, {
+        id: Date.now()+Math.random(), fileName:file.name,
+        type:info.type, fields:info.fields,
+        confidence:info.confidence, missingFields:info.missingFields, notes:info.notes,
+      }]);
+      setStatus(`已添加：${file.name}`);
+    } catch (e) {
+      setStatus(`处理 ${file.name} 失败：${e.message}`);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleFileUpload = async (e) => {
+    for (const f of Array.from(e.target.files))
+      if (f.name.endsWith('.pdf') || f.type==='application/pdf') await analyzePDF(f);
+    e.target.value='';
+  };
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    for (const f of Array.from(e.dataTransfer.files))
+      if (f.name.endsWith('.pdf') || f.type==='application/pdf') await analyzePDF(f);
+  };
+
+  // ── 网页分析 ──
+  const processURL = async () => {
+    if (!urlInput.trim()) return;
+    if (!hasApiKey()) { setStatus('⚠️ 请先在设置中填写 API Key'); setShowSettings(true); return; }
+    setProcessing(true);
+    try {
+      const prompt = `用户提供了一个网页URL，需要生成参考文献。请基于URL推断基本信息，严禁编造。
+URL: ${urlInput}
+网站名可从已知域名推断（如 xinhua.net→新华网），日期可从URL路径提取，其余留空。
+仅返回JSON：{"type":"web","confidence":"...","fields":{...},"missingFields":[...],"notes":"..."}`;
+      const raw = await callAPI(providerKey, apiKey, effectiveModel, customUrl, null, '', prompt);
+      const info = parseAIResponse(raw);
+      setDocuments(prev => [...prev, {
+        id:Date.now()+Math.random(), fileName:urlInput, type:'web',
+        fields:{...info.fields, URL:urlInput, '访问日期':new Date().toISOString().split('T')[0]},
+        confidence:info.confidence, missingFields:info.missingFields, notes:info.notes,
+      }]);
+      setUrlInput('');
+      setStatus('网页文章已添加');
+    } catch(e) { setStatus(`处理失败：${e.message}`); }
+    finally { setProcessing(false); }
+  };
+
+  // ── 智能补全 ──
+  const completeFields = async (doc) => {
+    if (!hasApiKey()) { setStatus('⚠️ 请先在设置中填写 API Key'); setShowSettings(true); return; }
+    setProcessing(true);
+    try {
+      const known = Object.entries(doc.fields).filter(([,v])=>v?.trim()).map(([k,v])=>`${k}: ${v}`).join('\n');
+      const prompt = `文献已知信息：\n${known}\n缺失字段：${doc.missingFields.join('、')}\n严禁编造，仅在有把握时填写，否则留空。
+返回JSON：{"completedFields":{"字段":{"value":"值","confidence":"high|medium|low"}},"stillMissing":[],"notes":""}`;
+      const raw = await callAPI(providerKey, apiKey, effectiveModel, customUrl, null, '', prompt);
+      const result = parseAIResponse(raw) || JSON.parse(raw.replace(/```json|```/g,'').trim());
+      const updated = {...doc.fields};
+      for (const [k,info] of Object.entries(result.completedFields||{}))
+        if (info.confidence!=='low') updated[k] = info.value;
+      setDocuments(prev=>prev.map(d=>d.id===doc.id?{...d,fields:updated,missingFields:result.stillMissing||[],notes:(d.notes||'')+'\n补全说明: '+(result.notes||'')}:d));
+      setStatus('补全完成，请核对结果');
+    } catch(e) { setStatus(`补全失败：${e.message}`); }
+    finally { setProcessing(false); }
+  };
+
+  // ── 引用生成 ──
+  const getRequiredFields = (template) => {
+    if (!template) return [];
+    return [...template.matchAll(/\{([^}]+)\}/g)]
+      .map(m=>m[1]).filter(n=>n!=='p./pp.');
+  };
+  const getMissingForCurrentFormat = (doc) => {
+    const tpl = allFormats[currentFormat]?.[doc.type];
+    return getRequiredFields(tpl).filter(f=>!doc.fields[f]?.trim());
+  };
+  const generateCitation = (doc, asHtml=false) => {
+    const tpl = allFormats[currentFormat]?.[doc.type];
+    if (!tpl) return '(该格式未定义此类型的模板)';
+    let c = tpl;
+    Object.entries(doc.fields).forEach(([k,v])=>{ c=c.replace(new RegExp(`\\{${k}\\}`,'g'),v||`[${k}缺失]`); });
+    c = c.replace(/\{p\.\/pp\.\}/g, formatPageMarker(doc.fields['页码']));
+    if (asHtml) {
+      c=c.replace(/\*\*\*([^*]+)\*\*\*/g,'<strong><em>$1</em></strong>');
+      c=c.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+      c=c.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+    } else {
+      c=c.replace(/\*\*\*|\*\*|\*/g,'');
+    }
+    return c;
+  };
+
+  const copyCitation = (doc) => { navigator.clipboard.writeText(generateCitation(doc)); setStatus('已复制',1500); };
+  const copyAll = () => { navigator.clipboard.writeText(documents.map(d=>generateCitation(d)).join('\n\n')); setStatus('已复制全部引用',2000); };
+  const exportTxt = () => {
+    const t = documents.map((d,i)=>`[${i+1}] ${generateCitation(d)}`).join('\n\n');
+    const a = Object.assign(document.createElement('a'),{ href:URL.createObjectURL(new Blob([t],{type:'text/plain;charset=utf-8'})), download:`参考文献_${currentFormat}.txt` });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  const deleteDoc = (id) => setDocuments(p=>p.filter(d=>d.id!==id));
+  const updateField = (id,field,value) => setDocuments(p=>p.map(d=>{
+    if(d.id!==id) return d;
+    const f={...d.fields,[field]:value};
+    return {...d,fields:f,missingFields:TYPE_FIELDS[d.type].filter(k=>!f[k]?.trim())};
+  }));
+  const addManualDoc = (type) => {
+    const doc={id:Date.now()+Math.random(),fileName:'手动录入',type,fields:TYPE_FIELDS[type].reduce((a,f)=>({...a,[f]:''}),{}),missingFields:TYPE_FIELDS[type],notes:'手动录入'};
+    setDocuments(p=>[...p,doc]); setEditingDoc(doc.id); setShowManualEntry(false);
+  };
+
+  // ── 数据迁移：导出/导入 ──
+  const exportConfig = () => {
+    const config = {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      customFormats,
+      currentFormat,
+      providerKey,
+      apiKey,           // 注意：含 API Key
+      modelId,
+      customUrl,
+      customModelId,
+      documents,        // 当前文献列表
+    };
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type:'application/json' });
+    const a = Object.assign(document.createElement('a'), {
+      href: URL.createObjectURL(blob),
+      download: `文献管理工具配置_${new Date().toISOString().split('T')[0]}.json`,
+    });
+    a.click(); URL.revokeObjectURL(a.href);
+    setStatus('已导出配置（含 API Key 与文献列表，请妥善保管）');
+  };
+
+  const importConfig = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const c = JSON.parse(reader.result);
+        if (typeof c !== 'object' || c === null) throw new Error('非法 JSON');
+        // 询问合并策略
+        const replace = confirm(
+          '导入方式：\n\n确定 = 完全替换当前所有数据（自定义格式、设置、文献列表）\n取消 = 仅合并自定义格式（保留当前设置和文献）'
+        );
+        if (replace) {
+          if (c.customFormats && typeof c.customFormats === 'object') setCustomFormats(c.customFormats);
+          if (c.currentFormat) setCurrentFormat(c.currentFormat);
+          if (c.providerKey && MODEL_PROVIDERS[c.providerKey]) setProviderKey(c.providerKey);
+          if (typeof c.apiKey === 'string') setApiKey(c.apiKey);
+          if (c.modelId) setModelId(c.modelId);
+          if (typeof c.customUrl === 'string') setCustomUrl(c.customUrl);
+          if (typeof c.customModelId === 'string') setCustomModelId(c.customModelId);
+          if (Array.isArray(c.documents)) setDocuments(c.documents);
+          setStatus('✅ 导入完成（已替换全部数据）');
+        } else {
+          if (c.customFormats && typeof c.customFormats === 'object') {
+            setCustomFormats(p => ({ ...p, ...c.customFormats }));
+            setStatus(`✅ 已合并 ${Object.keys(c.customFormats).length} 个自定义格式`);
+          } else {
+            setStatus('文件中未发现自定义格式');
+          }
+        }
+      } catch (e) {
+        setStatus(`导入失败：${e.message}`);
+      }
+    };
+    reader.onerror = () => setStatus('文件读取失败');
+    reader.readAsText(file);
+  };
+
+  const handleImportFile = (e) => {
+    const f = e.target.files?.[0];
+    if (f) importConfig(f);
+    e.target.value = '';
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 p-4">
+      <div className="max-w-7xl mx-auto">
+        {/* 顶栏 */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <h1 className="text-2xl font-bold text-slate-800">文献格式管理工具</h1>
+              <p className="text-xs text-slate-500 mt-0.5">
+                当前模型：<span className="font-medium text-blue-600">{provider.name} · {effectiveModel || '未设置'}</span>
+                {!hasApiKey() && <span className="ml-2 text-red-500">⚠️ 未配置 API Key</span>}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <select value={currentFormat} onChange={e=>setCurrentFormat(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">
+                {Object.keys(allFormats).map(n=><option key={n} value={n}>{n}</option>)}
+              </select>
+              <button onClick={()=>setShowFormatEditor(true)} className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm flex items-center gap-1">
+                <Settings size={15}/> 自定义格式
+              </button>
+              <button onClick={()=>setShowSettings(true)} className={`px-3 py-2 rounded-lg text-sm flex items-center gap-1 ${hasApiKey()?'bg-slate-100 hover:bg-slate-200 text-slate-700':'bg-red-50 hover:bg-red-100 text-red-600 border border-red-200'}`}>
+                <Key size={15}/> {hasApiKey()?'模型设置':'配置 API Key'}
+              </button>
+              <button onClick={()=>setShowHelp(true)} className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm flex items-center gap-1">
+                <HelpCircle size={15}/> 帮助
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 通知栏 */}
+        {notifications.length > 0 && (
+          <div className="mb-4 space-y-2">
+            {notifications.map(n => (
+              <div key={n.id} className={`flex items-start gap-2 px-4 py-3 rounded-lg border ${
+                n.type === 'error' ? 'bg-red-50 border-red-300 text-red-800'
+                : n.type === 'success' ? 'bg-green-50 border-green-300 text-green-800'
+                : 'bg-blue-50 border-blue-300 text-blue-800'
+              }`}>
+                {processing && n === notifications[notifications.length-1] && (
+                  <Loader2 size={15} className="animate-spin flex-shrink-0 mt-0.5"/>
+                )}
+                <span className="flex-1 text-sm">{n.msg}</span>
+                <button onClick={() => removeNotif(n.id)}
+                  className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center transition-colors ${
+                    n.type === 'error' ? 'bg-red-200 hover:bg-red-300 text-red-700'
+                    : n.type === 'success' ? 'bg-green-200 hover:bg-green-300 text-green-700'
+                    : 'bg-blue-200 hover:bg-blue-300 text-blue-700'
+                  }`}>
+                  <X size={11}/>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* 左栏 */}
+          <div className="space-y-4">
+            {/* PDF上传 */}
+            <div className="bg-white rounded-xl shadow-sm border-2 border-dashed border-slate-300 p-6 hover:border-blue-400 transition-colors"
+              onDrop={handleDrop} onDragOver={e=>e.preventDefault()}>
+              <div className="text-center">
+                <Upload className="mx-auto text-slate-400 mb-2" size={32}/>
+                <p className="text-sm font-medium text-slate-700 mb-1">上传 PDF 文献</p>
+                <p className="text-xs text-slate-500 mb-3">拖拽或点击，支持批量（最大30MB/个）</p>
+                <label>
+                  <input type="file" accept=".pdf,application/pdf" multiple onChange={handleFileUpload} className="hidden"/>
+                  <span className={`px-4 py-2 rounded-lg text-sm cursor-pointer inline-block text-white ${hasApiKey()?'bg-blue-600 hover:bg-blue-700':'bg-slate-400 cursor-not-allowed'}`}>
+                    {hasApiKey()?'选择文件':'请先配置 API Key'}
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {/* URL */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+              <div className="flex items-center gap-2 mb-2"><LinkIcon size={15} className="text-green-600"/><h3 className="font-medium text-slate-700 text-sm">网页文章 URL</h3></div>
+              <input type="url" value={urlInput} onChange={e=>setUrlInput(e.target.value)}
+                placeholder="https://..." className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm mb-2"
+                onKeyDown={e=>e.key==='Enter'&&processURL()}/>
+              <button onClick={processURL} disabled={!urlInput.trim()||processing||!hasApiKey()}
+                className="w-full px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white rounded-lg text-sm flex items-center justify-center gap-1">
+                <Search size={13}/> 添加网页文章
+              </button>
+            </div>
+
+            {/* 手动录入 */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+              <div className="flex items-center gap-2 mb-2"><Plus size={15} className="text-purple-600"/><h3 className="font-medium text-slate-700 text-sm">手动录入</h3></div>
+              <button onClick={()=>setShowManualEntry(true)} className="w-full px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm">选择类型并录入</button>
+            </div>
+
+            {/* 统计 */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+              <p className="font-medium text-slate-700 text-sm mb-2">文献统计</p>
+              <div className="text-sm text-slate-600 space-y-1">
+                <div className="flex justify-between"><span>总数</span><span className="font-semibold">{documents.length}</span></div>
+                {Object.entries(DOC_TYPES).map(([t,i])=>{const c=documents.filter(d=>d.type===t).length;return c?<div key={t} className="flex justify-between"><span className="flex items-center gap-1"><i.icon size={11}/>{i.label}</span><span>{c}</span></div>:null})}
+              </div>
+            </div>
+          </div>
+
+          {/* 右栏 */}
+          <div className="lg:col-span-2 space-y-4">
+            {documents.length>0 && (
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex items-center justify-between flex-wrap gap-2">
+                <span className="text-sm text-slate-600">共 {documents.length} 条</span>
+                <div className="flex gap-2">
+                  <button onClick={copyAll} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm flex items-center gap-1"><Copy size={13}/>复制全部</button>
+                  <button onClick={exportTxt} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm flex items-center gap-1"><Download size={13}/>导出 TXT</button>
+                </div>
+              </div>
+            )}
+
+            {documents.length===0
+              ? <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center">
+                  <FileText className="mx-auto text-slate-300 mb-3" size={48}/>
+                  <p className="text-slate-500">暂无文献，请上传 PDF 或录入</p>
+                  {!hasApiKey() && <p className="text-red-500 text-sm mt-2">⚠️ 请先点击右上角"配置 API Key"</p>}
+                </div>
+              : documents.map(doc=>{
+                  const isEditing = editingDoc===doc.id;
+                  const missing = getMissingForCurrentFormat(doc);
+                  return (
+                    <div key={doc.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <select value={doc.type} onChange={e=>setDocuments(p=>p.map(d=>d.id===doc.id?{...d,type:e.target.value,fields:{},missingFields:TYPE_FIELDS[e.target.value]}:d))}
+                            className={`px-2 py-1 rounded-lg text-xs border font-medium ${DOC_TYPES[doc.type].color}`}>
+                            {Object.entries(DOC_TYPES).map(([k,i])=><option key={k} value={k}>{i.label}</option>)}
+                          </select>
+                          <span className="text-sm text-slate-600 truncate" title={doc.fileName}>{doc.fileName}</span>
+                          {doc.confidence && <span className={`text-xs px-2 py-0.5 rounded ${doc.confidence==='high'?'bg-green-100 text-green-700':doc.confidence==='medium'?'bg-yellow-100 text-yellow-700':'bg-red-100 text-red-700'}`}>置信度：{doc.confidence==='high'?'高':doc.confidence==='medium'?'中':'低'}</span>}
+                        </div>
+                        <div className="flex gap-1">
+                          <button onClick={()=>setEditingDoc(isEditing?null:doc.id)} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><Edit2 size={13}/></button>
+                          <button onClick={()=>copyCitation(doc)} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><Copy size={13}/></button>
+                          <button onClick={()=>deleteDoc(doc.id)} className="p-1.5 hover:bg-red-50 rounded text-red-600"><Trash2 size={13}/></button>
+                        </div>
+                      </div>
+                      {isEditing
+                        ? <div className="p-4 bg-slate-50">
+                            <div className="grid grid-cols-2 gap-3 mb-3">
+                              {TYPE_FIELDS[doc.type].map(f=>(
+                                <div key={f}>
+                                  <label className="block text-xs font-medium text-slate-600 mb-1">{f}</label>
+                                  <input type="text" value={doc.fields[f]||''} onChange={e=>updateField(doc.id,f,e.target.value)}
+                                    className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" placeholder={`输入${f}`}/>
+                                </div>
+                              ))}
+                            </div>
+                            <button onClick={()=>setEditingDoc(null)} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm">完成编辑</button>
+                          </div>
+                        : <div className="p-4">
+                            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-3">
+                              <p className="text-xs text-slate-500 mb-1">生成的引用（{currentFormat}）：</p>
+                              <p className="text-sm text-slate-800 leading-relaxed" dangerouslySetInnerHTML={{__html:generateCitation(doc,true)}}/>
+                            </div>
+                            {missing.length>0 && (
+                              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3">
+                                <div className="flex items-start gap-2">
+                                  <AlertCircle size={15} className="text-amber-600 flex-shrink-0 mt-0.5"/>
+                                  <div>
+                                    <p className="text-sm font-medium text-amber-800 mb-1">当前格式缺失：{missing.join('、')}</p>
+                                    <p className="text-xs text-amber-700 mb-2">可尝试自动补全，或前往知网/Google Scholar手动查询</p>
+                                    <div className="flex gap-2">
+                                      <button onClick={()=>completeFields(doc)} disabled={processing||!hasApiKey()} className="px-3 py-1 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white rounded text-xs">智能补全</button>
+                                      <button onClick={()=>setEditingDoc(doc.id)} className="px-3 py-1 bg-white border border-amber-300 text-amber-700 rounded text-xs">手动填写</button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            {doc.notes && <p className="text-xs text-slate-500 italic whitespace-pre-line">{doc.notes}</p>}
+                          </div>
+                      }
+                    </div>
+                  );
+                })
+            }
+          </div>
+        </div>
+
+        {/* ── 模型设置弹窗 ── */}
+        {showSettings && (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b flex items-center justify-between">
+                <h2 className="text-lg font-semibold flex items-center gap-2"><Key size={18}/>模型 & API Key 设置</h2>
+                <button onClick={()=>setShowSettings(false)}><X size={20}/></button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-6 py-5">
+
+              {/* 选模型 */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-slate-700 mb-2">选择模型提供商</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(MODEL_PROVIDERS).map(([k,p])=>(
+                    <button key={k} onClick={()=>{setProviderKey(k);setModelId(p.models[0]?.id||'');}}
+                      className={`p-3 rounded-lg border text-sm text-left transition-colors ${providerKey===k?'border-blue-500 bg-blue-50 text-blue-700':'border-slate-200 hover:border-slate-300'}`}>
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 选具体模型 */}
+              {providerKey!=='openai_compat' && (
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">选择模型</label>
+                  <select value={modelId} onChange={e=>setModelId(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                    {provider.models.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {/* 自定义接口 */}
+              {providerKey==='openai_compat' && (
+                <>
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-slate-700 mb-1">API Base URL（需兼容 OpenAI 格式）</label>
+                    <input type="url" value={customUrl} onChange={e=>setCustomUrl(e.target.value)}
+                      placeholder="https://api.example.com/v1/chat/completions"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"/>
+                  </div>
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-slate-700 mb-1">模型名称</label>
+                    <input type="text" value={customModelId} onChange={e=>setCustomModelId(e.target.value)}
+                      placeholder="如: gpt-4o / qwen-max"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"/>
+                  </div>
+                </>
+              )}
+
+              {/* API Key */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-sm font-medium text-slate-700">API Key</label>
+                  {provider.keyLink && <a href={provider.keyLink} target="_blank" rel="noopener noreferrer"
+                    className="text-xs text-blue-600 hover:underline">获取 Key →</a>}
+                </div>
+                <div className="relative">
+                  <input type={showKey?'text':'password'} value={apiKey} onChange={e=>setApiKey(e.target.value)}
+                    placeholder={provider.keyPlaceholder}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm pr-10"/>
+                  <button onClick={()=>setShowKey(s=>!s)} className="absolute right-2 top-2 text-slate-400 hover:text-slate-600">
+                    {showKey?<EyeOff size={16}/>:<Eye size={16}/>}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">{provider.keyGuide}</p>
+                <p className="text-xs text-slate-400 mt-1">🔒 Key 仅保存在您的浏览器本地，不会上传任何服务器</p>
+              </div>
+
+              {/* PDF 模式说明 */}
+              <div className={`p-3 rounded-lg text-xs mb-4 ${provider.pdfMode==='native'?'bg-green-50 text-green-700':'bg-amber-50 text-amber-700'}`}>
+                {provider.pdfMode==='native'
+                  ? '✅ 该模型支持原生 PDF 读取（包括扫描版），效果最佳'
+                  : `⚠️ ${provider.warning || '该模型不支持直接读取 PDF，将先提取文字再分析。扫描版 PDF 无法处理。'}`}
+              </div>
+
+              {/* 数据迁移 */}
+              <div className="border-t border-slate-200 pt-4 mb-4">
+                <p className="text-sm font-medium text-slate-700 mb-2">数据迁移</p>
+                <p className="text-xs text-slate-500 mb-3">导出当前所有数据（自定义格式 + 模型设置 + 当前文献列表）为 JSON 文件，方便迁移到新对话。</p>
+                <div className="flex gap-2">
+                  <button onClick={exportConfig}
+                    className="flex-1 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm flex items-center justify-center gap-1">
+                    <Download size={14}/> 导出配置
+                  </button>
+                  <label className="flex-1 cursor-pointer">
+                    <input type="file" accept="application/json,.json" onChange={handleImportFile} className="hidden"/>
+                    <span className="block px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm text-center flex items-center justify-center gap-1">
+                      <Upload size={14}/> 导入配置
+                    </span>
+                  </label>
+                </div>
+                <p className="text-xs text-amber-600 mt-2">⚠️ 导出的 JSON 文件包含 API Key，请勿分享给他人</p>
+              </div>
+
+              </div>
+
+              <div className="px-6 py-4 border-t">
+                <button onClick={()=>setShowSettings(false)}
+                  className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium">
+                  保存并关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── 手动录入弹窗 ── */}
+        {showManualEntry && (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+              <div className="flex items-center justify-between mb-4"><h2 className="text-lg font-semibold">选择文献类型</h2><button onClick={()=>setShowManualEntry(false)}><X size={20}/></button></div>
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(DOC_TYPES).map(([t,i])=>(
+                  <button key={t} onClick={()=>addManualDoc(t)} className={`p-4 rounded-lg border-2 hover:border-blue-400 hover:bg-blue-50 text-left ${i.color}`}>
+                    <i.icon size={18} className="mb-1"/><div className="text-sm font-medium">{i.label}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── 自定义格式编辑器 ── */}
+        {showFormatEditor && (
+          <FormatEditor
+            currentFormats={allFormats} customFormats={customFormats}
+            onSave={(name,fmts)=>{ setCustomFormats(p=>({...p,[name]:fmts})); setCurrentFormat(name); setShowFormatEditor(false); }}
+            onDelete={(name)=>{ setCustomFormats(p=>{const n={...p};delete n[name];return n;}); if(currentFormat===name)setCurrentFormat('APA 7th'); }}
+            onClose={()=>setShowFormatEditor(false)}
+          />
+        )}
+
+        {/* ── 帮助弹窗 ── */}
+        {showHelp && <HelpModal onClose={()=>setShowHelp(false)}/>}
+      </div>
+    </div>
+  );
+}
+
+// ─── 自定义格式编辑器 ────────────────────────────────────────────────────────
+function FormatEditor({ currentFormats, customFormats, onSave, onDelete, onClose }) {
+  const [formatName, setFormatName] = useState('');
+  const [templates, setTemplates] = useState({journal:'',book:'',newspaper:'',web:'',official:''});
+  const [activeType, setActiveType] = useState('journal');
+  const [cursorPos, setCursorPos] = useState({start:0,end:0});
+  const textareaRef = useRef(null);
+
+  useEffect(()=>{ const len=(templates[activeType]||'').length; setCursorPos({start:len,end:len}); },[activeType]);
+
+  const handleSel = () => { const ta=textareaRef.current; if(ta) setCursorPos({start:ta.selectionStart,end:ta.selectionEnd}); };
+  const captureCursor = () => { const ta=textareaRef.current; if(ta&&document.activeElement===ta) setCursorPos({start:ta.selectionStart,end:ta.selectionEnd}); };
+
+  const insertAt = (text) => {
+    const cur=templates[activeType]||'';
+    const {start,end}=cursorPos;
+    const s=Math.min(Math.max(0,start),cur.length), e=Math.min(Math.max(s,end),cur.length);
+    const nv=cur.substring(0,s)+text+cur.substring(e);
+    setTemplates(p=>({...p,[activeType]:nv}));
+    const np=s+text.length; setCursorPos({start:np,end:np});
+    setTimeout(()=>{ const ta=textareaRef.current; if(ta){ta.focus();ta.setSelectionRange(np,np);} },0);
+  };
+  const wrapSel = (b,a) => {
+    const cur=templates[activeType]||'';
+    const {start,end}=cursorPos;
+    const s=Math.min(Math.max(0,start),cur.length),e=Math.min(Math.max(s,end),cur.length);
+    const sel=cur.substring(s,e);
+    if(sel){ const nv=cur.substring(0,s)+b+sel+a+cur.substring(e); setTemplates(p=>({...p,[activeType]:nv})); const ns=s+b.length,ne=ns+sel.length; setCursorPos({start:ns,end:ne}); setTimeout(()=>{const ta=textareaRef.current;if(ta){ta.focus();ta.setSelectionRange(ns,ne);}},0); }
+    else insertAt(b+a);
+  };
+
+  const preview = (tpl,type) => {
+    if(!tpl) return '(模板为空)';
+    const s={journal:{作者:'张三',标题:'论某社会现象',刊名:'社会学研究',年份:'2024',卷:'39',期:'2',页码:'15-30',出版地:'北京',出版机构:'中国社会科学院',DOI:'10.1234/abc'},book:{作者:'李四',书名:'中国近代史',版次:'第2版',出版地:'北京',出版机构:'商务印书馆',年份:'2023',页码:'120',ISBN:'978-7-100-12345-6'},newspaper:{作者:'王五',标题:'关于教育改革的思考',报纸名:'人民日报',出版地:'北京',出版日期:'2024-03-15',版次:'02版'},web:{作者:'赵六',标题:'人工智能的伦理思考',网站名:'澎湃新闻',出版机构:'澎湃新闻网',URL:'https://www.thepaper.cn/...',发表日期:'2024-05-20',访问日期:'2024-06-01'},official:{发文机关:'教育部',文件标题:'关于推进高校科研工作的意见',文号:'教科技〔2024〕1号',版次:'',出版地:'北京',发布日期:'2024-01-15'}};
+    let r=tpl;
+    Object.entries(s[type]).forEach(([k,v])=>r=r.replace(new RegExp(`\\{${k}\\}`,'g'),v));
+    const pg=s[type]['页码']||''; r=r.replace(/\{p\.\/pp\.\}/g,pg.includes('-')?'pp.':(pg?'p.':''));
+    r=r.replace(/\*\*\*([^*]+)\*\*\*/g,'<strong><em>$1</em></strong>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\*([^*]+)\*/g,'<em>$1</em>');
+    return r;
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="px-6 py-4 border-b flex items-center justify-between">
+          <h2 className="text-lg font-semibold">自定义引用格式</h2>
+          <button onClick={onClose}><X size={20}/></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6">
+          {Object.keys(customFormats).length>0 && (
+            <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-slate-600">已保存的自定义格式（自动保存）：</p>
+                <button onClick={()=>{if(confirm('确定清除所有自定义格式？'))Object.keys(customFormats).forEach(n=>onDelete(n));}} className="text-xs text-red-500">全部清除</button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.keys(customFormats).map(n=>(
+                  <div key={n} className="flex items-center gap-1 bg-white px-2 py-1 rounded border">
+                    <button onClick={()=>{setFormatName(n);setTemplates(currentFormats[n]);}} className="text-sm text-blue-600 hover:underline">{n}</button>
+                    <button onClick={()=>onDelete(n)} className="text-red-500 p-0.5"><X size={12}/></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-1">格式名称</label>
+            <input type="text" value={formatName} onChange={e=>setFormatName(e.target.value)} placeholder="如：我的硕士论文格式" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"/>
+          </div>
+
+          <div className="mb-3 flex gap-1 flex-wrap border-b border-slate-200">
+            {Object.entries(DOC_TYPES).map(([t,i])=>(
+              <button key={t} onClick={()=>setActiveType(t)} className={`px-3 py-2 text-sm rounded-t ${activeType===t?'bg-blue-600 text-white':'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{i.label}</button>
+            ))}
+          </div>
+
+          <div className="mb-3">
+            <p className="text-xs text-slate-600 mb-2">字段占位符：</p>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {TYPE_FIELDS[activeType].map(f=>(
+                <button key={f} onMouseDown={e=>{e.preventDefault();captureCursor();}} onClick={()=>insertAt(`{${f}}`)}
+                  className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-xs border border-blue-200">{`{${f}}`}</button>
+              ))}
+              {['journal','newspaper','book'].includes(activeType) && (
+                <button onMouseDown={e=>{e.preventDefault();captureCursor();}} onClick={()=>insertAt('{p./pp.}')}
+                  className="px-2 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded text-xs border border-purple-200" title="单页→p. 多页→pp.">{'{p./pp.}'}</button>
+              )}
+            </div>
+          </div>
+
+          <div className="mb-3">
+            <p className="text-xs text-slate-600 mb-2">格式标记：</p>
+            <div className="flex gap-1">
+              {[['**','**','B','bold'],['*','*','I','italic'],['***','***','BI','bold italic']].map(([b,a,label,cls])=>(
+                <button key={label} onMouseDown={e=>{e.preventDefault();captureCursor();}} onClick={()=>wrapSel(b,a)}
+                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs border border-slate-300">
+                  <span className={cls}>{label}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-slate-500 mt-1"><code className="bg-slate-100 px-1">**加粗**</code>  <code className="bg-slate-100 px-1">*斜体*</code>  <code className="bg-slate-100 px-1">***粗斜***</code></p>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-1">{DOC_TYPES[activeType].label}模板</label>
+            <textarea ref={textareaRef} value={templates[activeType]||''} onChange={e=>{setTemplates(p=>({...p,[activeType]:e.target.value}));setCursorPos({start:e.target.selectionStart,end:e.target.selectionEnd});}}
+              onSelect={handleSel} onClick={handleSel} onKeyUp={handleSel} onFocus={handleSel}
+              placeholder="例：{作者}. {标题}[J]. *{刊名}*, {年份}, {卷}({期}): {p./pp.} {页码}."
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono h-24"/>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+            <p className="text-xs font-medium text-slate-600 mb-1">实时预览（样例数据）：</p>
+            <p className="text-sm text-slate-800" dangerouslySetInnerHTML={{__html:preview(templates[activeType],activeType)}}/>
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">取消</button>
+          <button onClick={()=>{if(!formatName.trim()){alert('请输入格式名称');return;}onSave(formatName,templates);}} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm">保存格式</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── 帮助弹窗 ────────────────────────────────────────────────────────────────
+function HelpModal({ onClose }) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="px-6 py-4 border-b flex items-center justify-between"><h2 className="text-lg font-semibold">使用帮助</h2><button onClick={onClose}><X size={20}/></button></div>
+        <div className="flex-1 overflow-y-auto p-6 text-sm text-slate-700 space-y-4">
+          <div><h3 className="font-semibold text-slate-800 mb-1">🚀 快速开始</h3>
+            <ol className="list-decimal list-inside space-y-1 text-slate-600">
+              <li>点击右上角"配置 API Key"，选择你的模型并填入 Key</li>
+              <li>顶部选择引用格式（或自定义）</li>
+              <li>上传 PDF / 粘贴 URL / 手动录入</li>
+              <li>检查生成的引用，补全缺失字段</li>
+              <li>复制或导出</li>
+            </ol>
+          </div>
+          <div><h3 className="font-semibold text-slate-800 mb-1">🤖 支持的模型</h3>
+            <ul className="space-y-1 text-slate-600">
+              <li>• <b>Claude（强烈推荐）</b>：原生 PDF 读取，支持扫描版，效果最好，且不受浏览器 CORS 限制</li>
+              <li>• <b>Gemini（兼容模式）</b>：走 OpenAI 兼容端点绕过 CORS，文本提取模式，不支持扫描版 PDF</li>
+              <li>• <b>DeepSeek</b>：文本提取模式，不支持扫描版 PDF，价格极低</li>
+              <li>• <b>豆包</b>：文本提取模式，国内访问稳定</li>
+              <li>• <b>自定义</b>：任何兼容 OpenAI /v1/chat/completions 格式的接口</li>
+            </ul>
+            <p className="mt-2 text-xs text-amber-700 bg-amber-50 p-2 rounded">⚠️ 注意：由于浏览器 CORS 安全策略，部分 API（如 Gemini 原生端点）无法从浏览器直接调用。本工具已选用可跨域访问的端点，如遇"Failed to fetch"请检查模型选择。</p>
+          </div>
+          <div><h3 className="font-semibold text-slate-800 mb-1">✏️ 自定义格式</h3>
+            <p className="text-slate-600 mb-1">用占位符编写模板，支持格式标记：</p>
+            <pre className="bg-slate-100 p-2 rounded text-xs">{`{作者}. {标题}[J]. *{刊名}*, {年份}, {卷}({期}): {p./pp.} {页码}.`}</pre>
+            <p className="text-slate-600 text-xs mt-1"><code className="bg-slate-100 px-1">*斜体*</code>  <code className="bg-slate-100 px-1">**加粗**</code>  <code className="bg-slate-100 px-1">{'{p./pp.}'}</code>（页码自适应）</p>
+          </div>
+          <div><h3 className="font-semibold text-slate-800 mb-1">🔄 数据迁移（跨对话）</h3>
+            <p className="text-slate-600">在"模型设置"弹窗底部可导出当前所有数据为 JSON（含自定义格式、API Key、当前文献列表），在新对话里打开新版工具后导入即可继续工作。导入时可选择"完全替换"或"仅合并自定义格式"。</p>
+          </div>
+          <div><h3 className="font-semibold text-slate-800 mb-1">🔒 隐私说明</h3>
+            <p className="text-slate-600">API Key 和自定义格式仅保存在你的浏览器本地，不会上传任何服务器。PDF 文件直接从你的浏览器发送到所选模型的 API，不经过任何中间服务器。</p>
+          </div>
+        </div>
+        <div className="px-6 py-3 border-t"><button onClick={onClose} className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm">知道了</button></div>
+      </div>
+    </div>
+  );
+}
+
+
+import { createRoot } from 'react-dom/client';
+createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
